@@ -130,13 +130,67 @@ def calculate_supertrend(df, period=CONFIG['st_period'], multiplier=CONFIG['st_m
     df['supertrend_dir'] = direction
     return df
 
+def calculate_adx(df, period=CONFIG['adx_period']):
+    """Calculate ADX (Average Directional Index) using normal candles."""
+    df = df.copy()
+    
+    # Calculate True Range
+    df['h-l'] = df['high'] - df['low']
+    df['h-pc'] = abs(df['high'] - df['close'].shift(1))
+    df['l-pc'] = abs(df['low'] - df['close'].shift(1))
+    df['tr'] = df[['h-l', 'h-pc', 'l-pc']].max(axis=1)
+    
+    # Calculate +DM and -DM
+    df['plus_dm'] = df['high'].diff()
+    df['minus_dm'] = df['low'].diff(-1).shift(1) # diff(1) on low is low[i] - low[i-1]
+    # Standard DM logic:
+    df['plus_dm'] = np.where((df['high'].diff() > df['low'].shift(1) - df['low']) & (df['high'].diff() > 0), df['high'].diff(), 0)
+    df['minus_dm'] = np.where((df['low'].shift(1) - df['low'] > df['high'].diff()) & (df['low'].shift(1) - df['low'] > 0), df['low'].shift(1) - df['low'], 0)
+    
+    # Smooth TR, +DM, -DM using Wilder's method (EMA with alpha=1/period)
+    def wilders_smoothing(series, period):
+        return series.ewm(alpha=1/period, adjust=False).mean()
+        
+    df['tr_s'] = wilders_smoothing(df['tr'], period)
+    df['plus_dm_s'] = wilders_smoothing(df['plus_dm'], period)
+    df['minus_dm_s'] = wilders_smoothing(df['minus_dm'], period)
+    
+    # Calculate +DI and -DI
+    df['plus_di'] = 100 * (df['plus_dm_s'] / df['tr_s'])
+    df['minus_di'] = 100 * (df['minus_dm_s'] / df['tr_s'])
+    
+    # Calculate DX and ADX
+    df['dx'] = 100 * (abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di']))
+    df['adx'] = wilders_smoothing(df['dx'], period)
+    
+    return df['adx']
+
+def calculate_rsi(df, period=CONFIG['rsi_period']):
+    """Calculate RSI (Relative Strength Index)."""
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    
+    # Wilder's Smoothing for RSI
+    avg_gain = delta.where(delta > 0, 0).ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+    
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
 def run_backtest(df):
-    """Main backtest loop for Long and Short positions."""
+    """Main backtest loop with SuperTrend, ADX Filter, and RSI Pullback Entry."""
     initial_balance = CONFIG['initial_balance']
     fee_rate = CONFIG['fee_rate']
     risk_per_trade = CONFIG['risk_per_trade']
+    adx_threshold = CONFIG['adx_threshold']
+    rsi_long_pb = CONFIG['rsi_long_pullback']
+    rsi_short_pb = CONFIG['rsi_short_pullback']
     
     df = calculate_supertrend(df)
+    df['adx'] = calculate_adx(df)
+    df['rsi'] = calculate_rsi(df)
     
     df['total_fees'] = 0.0
     df['current_balance'] = float(initial_balance)
@@ -144,63 +198,65 @@ def run_backtest(df):
     balance = initial_balance
     position = 0 # 0: No position, 1: Long, -1: Short
     entry_price = 0
-    trade_results = [] # To store profit/loss of each closed trade
+    trade_results = []
     
-    print(f"\n--- TRADE LOG (20% RISK, LONG & SHORT) ---", flush=True)
+    print(f"\n--- TRADE LOG (Risk {risk_per_trade*100}%, ADX > {adx_threshold}, RSI Pullback) ---", flush=True)
     print(f"{'Date':<12} | {'Action':<12} | {'Price':<12} | {'Fee (USDT)':<10} | {'Balance (USDT)':<15}", flush=True)
     print("-" * 90, flush=True)
     
     for i in range(len(df)):
-        if i < 16: # Buffer for SuperTrend stability
+        if i < 30: # Wait for indicators to stabilize
             df.at[i, 'current_balance'] = initial_balance
             continue 
 
         current_dir = df.loc[i-1, 'supertrend_dir']
-        prev_dir = df.loc[i-2, 'supertrend_dir']
+        current_adx = df.loc[i-1, 'adx']
+        current_rsi = df.loc[i-1, 'rsi']
         
-        # FLIP TO LONG
-        if current_dir == 1 and prev_dir == -1:
-            # 1. Close Short if exists
-            if position == -1:
-                exit_price = df.loc[i, 'open']
-                profit_pct = (entry_price - exit_price) / entry_price
-                pnl = trade_capital * (1 + profit_pct) - trade_capital
-                fee_exit = (trade_capital + pnl) * fee_rate
-                balance = balance + pnl - fee_exit
-                df.at[i, 'total_fees'] += fee_exit
-                trade_results.append(pnl - fee_exit)
-                print(f"{df.loc[i, 'timestamp'].date()} | CLOSE SHORT | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*100:.2f}%)", flush=True)
+        # 1. EXIT LOGIC (Flipped Trend)
+        if position == 1 and current_dir == -1:
+            exit_price = df.loc[i, 'open']
+            profit_pct = (exit_price / entry_price) - 1
+            pnl = trade_capital * (1 + profit_pct) - trade_capital
+            fee_exit = (trade_capital + pnl) * fee_rate
+            balance = balance + pnl - fee_exit
+            df.at[i, 'total_fees'] += fee_exit
+            trade_results.append(pnl - fee_exit)
+            print(f"{df.loc[i, 'timestamp'].date()} | CLOSE LONG  | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*100:.2f}%)", flush=True)
+            position = 0
 
-            # 2. Open Long
-            entry_price = df.loc[i, 'open']
-            trade_capital = balance * risk_per_trade
-            fee_entry = trade_capital * fee_rate
-            balance -= fee_entry
-            position = 1
-            print(f"{df.loc[i, 'timestamp'].date()} | OPEN LONG   | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f}", flush=True)
-            df.at[i, 'total_fees'] += fee_entry
+        elif position == -1 and current_dir == 1:
+            exit_price = df.loc[i, 'open']
+            profit_pct = (entry_price - exit_price) / entry_price
+            pnl = trade_capital * (1 + profit_pct) - trade_capital
+            fee_exit = (trade_capital + pnl) * fee_rate
+            balance = balance + pnl - fee_exit
+            df.at[i, 'total_fees'] += fee_exit
+            trade_results.append(pnl - fee_exit)
+            print(f"{df.loc[i, 'timestamp'].date()} | CLOSE SHORT | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*100:.2f}%)", flush=True)
+            position = 0
 
-        # FLIP TO SHORT
-        elif current_dir == -1 and prev_dir == 1:
-            # 1. Close Long if exists
-            if position == 1:
-                exit_price = df.loc[i, 'open']
-                profit_pct = (exit_price / entry_price) - 1
-                pnl = trade_capital * (1 + profit_pct) - trade_capital
-                fee_exit = (trade_capital + pnl) * fee_rate
-                balance = balance + pnl - fee_exit
-                df.at[i, 'total_fees'] += fee_exit
-                trade_results.append(pnl - fee_exit)
-                print(f"{df.loc[i, 'timestamp'].date()} | CLOSE LONG  | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*100:.2f}%)", flush=True)
+        # 2. ENTRY LOGIC (Current Condition)
+        if position == 0:
+            # Long Entry: Uptrend zone + Strong trend + RSI Pulback
+            if current_dir == 1 and current_adx > adx_threshold and current_rsi < rsi_long_pb:
+                entry_price = df.loc[i, 'open']
+                trade_capital = balance * risk_per_trade
+                fee_entry = trade_capital * fee_rate
+                balance -= fee_entry
+                position = 1
+                df.at[i, 'total_fees'] += fee_entry
+                print(f"{df.loc[i, 'timestamp'].date()} | OPEN LONG   | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (ADX: {current_adx:.1f}, RSI: {current_rsi:.1f})", flush=True)
 
-            # 2. Open Short
-            entry_price = df.loc[i, 'open']
-            trade_capital = balance * risk_per_trade
-            fee_entry = trade_capital * fee_rate
-            balance -= fee_entry
-            position = -1
-            print(f"{df.loc[i, 'timestamp'].date()} | OPEN SHORT  | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f}", flush=True)
-            df.at[i, 'total_fees'] += fee_entry
+            # Short Entry: Downtrend zone + Strong trend + RSI Pullback
+            elif current_dir == -1 and current_adx > adx_threshold and current_rsi > rsi_short_pb:
+                entry_price = df.loc[i, 'open']
+                trade_capital = balance * risk_per_trade
+                fee_entry = trade_capital * fee_rate
+                balance -= fee_entry
+                position = -1
+                df.at[i, 'total_fees'] += fee_entry
+                print(f"{df.loc[i, 'timestamp'].date()} | OPEN SHORT  | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (ADX: {current_adx:.1f}, RSI: {current_rsi:.1f})", flush=True)
 
         # Update Daily Equity (80% Cash + 20% Unrealized PnL)
         if position == 1:
