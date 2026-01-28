@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# Dữ liệu thị trường (Cá nhân)
+market_data.csv
+
+# Kết quả Backtest
+*.png
+*.txt
+*.log
+
+# Cấu hình IDE
+.vscode/
+.idea/
