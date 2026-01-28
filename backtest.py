@@ -179,8 +179,27 @@ def calculate_rsi(df, period=CONFIG['rsi_period']):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
+def calculate_vwap(df):
+    """Calculate VWAP (Volume Weighted Average Price) reset daily."""
+    df = df.copy()
+    # Reset VWAP every day
+    df['date'] = df['timestamp'].dt.date
+    
+    # Cumulative (Price * Volume) and Cumulative Volume per day
+    df['pv'] = df['close'] * df['volume']
+    
+    vwap = df.groupby('date').apply(
+        lambda x: x['pv'].cumsum() / x['volume'].cumsum()
+    )
+    
+    # Flatten the multi-index result if necessary
+    if isinstance(vwap, pd.Series):
+        return vwap.values
+    else:
+        return vwap.reset_index(level=0, drop=True).values
+
 def run_backtest(df):
-    """Main backtest loop with SuperTrend, ADX Filter, and RSI Pullback Entry."""
+    """Main backtest loop with SuperTrend, ADX, VWAP and RSI Pullback."""
     initial_balance = CONFIG['initial_balance']
     fee_rate = CONFIG['fee_rate']
     risk_per_trade = CONFIG['risk_per_trade']
@@ -199,6 +218,7 @@ def run_backtest(df):
     df = calculate_supertrend(df)
     df['adx'] = calculate_adx(df)
     df['rsi'] = calculate_rsi(df)
+    df['vwap'] = calculate_vwap(df)
     
     df['total_fees'] = 0.0
     df['current_balance'] = float(initial_balance)
@@ -221,6 +241,8 @@ def run_backtest(df):
         current_adx = df.loc[i-1, 'adx']
         rsi_now = df.loc[i-1, 'rsi']
         rsi_prev = df.loc[i-2, 'rsi']
+        current_close = df.loc[i-1, 'close']
+        current_vwap = df.loc[i-1, 'vwap']
         
         # 1. EXIT LOGIC (Flipped Trend)
         if position == 1 and current_dir == -1:
@@ -262,29 +284,31 @@ def run_backtest(df):
             # Long Entry Logic
             is_uptrend = current_dir == 1
             has_momentum = current_adx > adx_threshold
+            above_vwap = current_close > current_vwap
             is_pullback_l = (rsi_prev > rl_prev_min) and (rl_now_min <= rsi_now <= rl_now_max)
             
-            if is_uptrend and has_momentum and is_pullback_l:
+            if is_uptrend and has_momentum and above_vwap and is_pullback_l:
                 entry_price = df.loc[i, 'open']
                 margin = balance * risk_per_trade
                 fee_entry = (margin * leverage) * fee_rate
                 balance -= (margin + fee_entry)
                 position = 1
                 df.at[i, 'total_fees'] += fee_entry
-                print(f"{df.loc[i, 'timestamp'].date()} | OPEN LONG   | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (Lev: {leverage}x)", flush=True)
+                print(f"{df.loc[i, 'timestamp'].date()} | OPEN LONG   | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (Lev: {leverage}x, P>VWAP)")
 
             # Short Entry Logic
             is_downtrend = current_dir == -1
+            below_vwap = current_close < current_vwap
             is_pullback_s = (rsi_prev < rs_prev_max) and (rs_now_min <= rsi_now <= rs_now_max)
             
-            if is_downtrend and has_momentum and is_pullback_s:
+            if is_downtrend and has_momentum and below_vwap and is_pullback_s:
                 entry_price = df.loc[i, 'open']
                 margin = balance * risk_per_trade
                 fee_entry = (margin * leverage) * fee_rate
                 balance -= (margin + fee_entry)
                 position = -1
                 df.at[i, 'total_fees'] += fee_entry
-                print(f"{df.loc[i, 'timestamp'].date()} | OPEN SHORT  | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (Lev: {leverage}x)", flush=True)
+                print(f"{df.loc[i, 'timestamp'].date()} | OPEN SHORT  | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (Lev: {leverage}x, P<VWAP)")
 
         # Update Daily Equity (Balance + Margin + Unrealized PnL)
         if position == 1:
