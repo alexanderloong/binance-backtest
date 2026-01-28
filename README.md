@@ -15,7 +15,7 @@ A professional backtesting tool for Binance Spot trading using the SuperTrend in
 Requires Python 3.8+.
 
 ```bash
-pip install ccxt pandas matplotlib numpy
+pip install binance-futures-connector pandas matplotlib numpy
 ```
 
 ## 📈 Usage

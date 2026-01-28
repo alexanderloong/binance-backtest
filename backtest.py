@@ -1,5 +1,7 @@
-import ccxt
+from binance.um_futures import UMFutures
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg') # Set non-interactive backend before importing pyplot
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -19,16 +21,40 @@ def fetch_data(symbol=CONFIG['symbol'], timeframe=CONFIG['timeframe'], limit=CON
         if len(df) >= limit:
             return df
 
-    print(f"Fetching data from Binance for {symbol}...", flush=True)
-    exchange = ccxt.binance()
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    
-    # Cache data to CSV
-    df.to_csv(filename, index=False)
-    print(f"Saved data to {filename}", flush=True)
-    return df
+    try:
+        print(f"Fetching data from Binance for {symbol}...", flush=True)
+        # Initialize Binance UM Futures client
+        client = UMFutures()
+        
+        # klines returns: [ [Open time, Open, High, Low, Close, Volume, Close time, ...] ]
+        klines = client.klines(symbol=symbol, interval=timeframe, limit=limit)
+        
+        if not klines:
+            print(f"Error: No data returned from Binance for {symbol}. Please check the symbol and timeframe.", flush=True)
+            return None
+            
+        # Extract required columns
+        data = []
+        for k in klines:
+            data.append([
+                k[0], # timestamp
+                float(k[1]), # open
+                float(k[2]), # high
+                float(k[3]), # low
+                float(k[4]), # close
+                float(k[5])  # volume
+            ])
+            
+        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        
+        # Cache data to CSV
+        df.to_csv(filename, index=False)
+        print(f"Saved data to {filename}", flush=True)
+        return df
+    except Exception as e:
+        print(f"Error fetching data from Binance Futures: {e}", flush=True)
+        return None
 
 def calculate_heikin_ashi(df):
     """Calculate Heikin Ashi candles."""
@@ -227,6 +253,12 @@ def report(df, trade_results):
 
 if __name__ == "__main__":
     df = fetch_data()
-    df, trade_results = run_backtest(df)
-    # Start reporting from index 15 to show exactly 1000.00 as Initial Balance
-    report(df.iloc[15:], trade_results)
+    if df is not None and not df.empty:
+        df, trade_results = run_backtest(df)
+        # Start reporting from index 15 to show exactly 1000.00 as Initial Balance
+        if len(df) > 15:
+            report(df.iloc[15:], trade_results)
+        else:
+            print("Error: Not enough data points to run backtest (minimum 16 required).", flush=True)
+    else:
+        print("Error: Failed to fetch or load data.", flush=True)

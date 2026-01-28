@@ -13,6 +13,8 @@ market_data.csv
 *.txt
 *.log
 
+!requirements.txt
+
 # Cấu hình IDE
 .vscode/
 .idea/
