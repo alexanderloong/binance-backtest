@@ -15,12 +15,17 @@ CONFIG = {
     
     # RSI Indicator Settings
     "rsi_period": 14,
-    "rsi_long_pullback": 50,  # Buy when RSI < 50 in uptrend
-    "rsi_short_pullback": 50, # Sell when RSI > 50 in downtrend
+    "rsi_long_prev_min": 50,
+    "rsi_long_now_min": 40,
+    "rsi_long_now_max": 50,
+    "rsi_short_prev_max": 50,
+    "rsi_short_now_min": 50,
+    "rsi_short_now_max": 60,
     
     # Capital Management
     "initial_balance": 1000,
-     "risk_per_trade": 0.2,  # 20% of balance per trade
+    "risk_per_trade": 0.2,  # 20% of balance per trade
+    "leverage": 5,         # Leverage (1x to 125x)
     "fee_rate": 0.0005,     # 0.05% Binance Futures Taker fee
     
     # Data Storage

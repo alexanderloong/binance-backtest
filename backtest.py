@@ -184,9 +184,17 @@ def run_backtest(df):
     initial_balance = CONFIG['initial_balance']
     fee_rate = CONFIG['fee_rate']
     risk_per_trade = CONFIG['risk_per_trade']
+    leverage = CONFIG['leverage']
     adx_threshold = CONFIG['adx_threshold']
-    rsi_long_pb = CONFIG['rsi_long_pullback']
-    rsi_short_pb = CONFIG['rsi_short_pullback']
+    
+    # RSI Pullback Params
+    rl_prev_min = CONFIG['rsi_long_prev_min']
+    rl_now_min = CONFIG['rsi_long_now_min']
+    rl_now_max = CONFIG['rsi_long_now_max']
+    
+    rs_prev_max = CONFIG['rsi_short_prev_max']
+    rs_now_min = CONFIG['rsi_short_now_min']
+    rs_now_max = CONFIG['rsi_short_now_max']
     
     df = calculate_supertrend(df)
     df['adx'] = calculate_adx(df)
@@ -200,71 +208,93 @@ def run_backtest(df):
     entry_price = 0
     trade_results = []
     
-    print(f"\n--- TRADE LOG (Risk {risk_per_trade*100}%, ADX > {adx_threshold}, RSI Pullback) ---", flush=True)
+    print(f"\n--- TRADE LOG (Risk {risk_per_trade*100}%, Lev {leverage}x, ADX > {adx_threshold}) ---", flush=True)
     print(f"{'Date':<12} | {'Action':<12} | {'Price':<12} | {'Fee (USDT)':<10} | {'Balance (USDT)':<15}", flush=True)
     print("-" * 90, flush=True)
     
     for i in range(len(df)):
-        if i < 30: # Wait for indicators to stabilize
+        if i < 31: # Need i-2 so min index is 2, indicators need stabilization
             df.at[i, 'current_balance'] = initial_balance
             continue 
 
         current_dir = df.loc[i-1, 'supertrend_dir']
         current_adx = df.loc[i-1, 'adx']
-        current_rsi = df.loc[i-1, 'rsi']
+        rsi_now = df.loc[i-1, 'rsi']
+        rsi_prev = df.loc[i-2, 'rsi']
         
         # 1. EXIT LOGIC (Flipped Trend)
         if position == 1 and current_dir == -1:
             exit_price = df.loc[i, 'open']
             profit_pct = (exit_price / entry_price) - 1
-            pnl = trade_capital * (1 + profit_pct) - trade_capital
-            fee_exit = (trade_capital + pnl) * fee_rate
-            balance = balance + pnl - fee_exit
+            pnl = margin * leverage * profit_pct
+            
+            # Check for Liquidation
+            if pnl <= -margin:
+                pnl = -margin
+                print(f"{df.loc[i, 'timestamp'].date()} | LIQUIDATED LONG | {exit_price:<12.2f} | 0.00       | {balance:<15.2f}", flush=True)
+            
+            fee_exit = (abs(margin * leverage) + pnl) * fee_rate
+            balance = balance + margin + pnl - fee_exit
             df.at[i, 'total_fees'] += fee_exit
             trade_results.append(pnl - fee_exit)
-            print(f"{df.loc[i, 'timestamp'].date()} | CLOSE LONG  | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*100:.2f}%)", flush=True)
+            print(f"{df.loc[i, 'timestamp'].date()} | CLOSE LONG  | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*leverage*100:.2f}%)", flush=True)
             position = 0
 
         elif position == -1 and current_dir == 1:
             exit_price = df.loc[i, 'open']
             profit_pct = (entry_price - exit_price) / entry_price
-            pnl = trade_capital * (1 + profit_pct) - trade_capital
-            fee_exit = (trade_capital + pnl) * fee_rate
-            balance = balance + pnl - fee_exit
+            pnl = margin * leverage * profit_pct
+            
+            # Check for Liquidation
+            if pnl <= -margin:
+                pnl = -margin
+                print(f"{df.loc[i, 'timestamp'].date()} | LIQUIDATED SHORT| {exit_price:<12.2f} | 0.00       | {balance:<15.2f}", flush=True)
+
+            fee_exit = (abs(margin * leverage) + pnl) * fee_rate
+            balance = balance + margin + pnl - fee_exit
             df.at[i, 'total_fees'] += fee_exit
             trade_results.append(pnl - fee_exit)
-            print(f"{df.loc[i, 'timestamp'].date()} | CLOSE SHORT | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*100:.2f}%)", flush=True)
+            print(f"{df.loc[i, 'timestamp'].date()} | CLOSE SHORT | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*leverage*100:.2f}%)", flush=True)
             position = 0
 
         # 2. ENTRY LOGIC (Current Condition)
         if position == 0:
-            # Long Entry: Uptrend zone + Strong trend + RSI Pulback
-            if current_dir == 1 and current_adx > adx_threshold and current_rsi < rsi_long_pb:
+            # Long Entry Logic
+            is_uptrend = current_dir == 1
+            has_momentum = current_adx > adx_threshold
+            is_pullback_l = (rsi_prev > rl_prev_min) and (rl_now_min <= rsi_now <= rl_now_max)
+            
+            if is_uptrend and has_momentum and is_pullback_l:
                 entry_price = df.loc[i, 'open']
-                trade_capital = balance * risk_per_trade
-                fee_entry = trade_capital * fee_rate
-                balance -= fee_entry
+                margin = balance * risk_per_trade
+                fee_entry = (margin * leverage) * fee_rate
+                balance -= (margin + fee_entry)
                 position = 1
                 df.at[i, 'total_fees'] += fee_entry
-                print(f"{df.loc[i, 'timestamp'].date()} | OPEN LONG   | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (ADX: {current_adx:.1f}, RSI: {current_rsi:.1f})", flush=True)
+                print(f"{df.loc[i, 'timestamp'].date()} | OPEN LONG   | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (Lev: {leverage}x)", flush=True)
 
-            # Short Entry: Downtrend zone + Strong trend + RSI Pullback
-            elif current_dir == -1 and current_adx > adx_threshold and current_rsi > rsi_short_pb:
+            # Short Entry Logic
+            is_downtrend = current_dir == -1
+            is_pullback_s = (rsi_prev < rs_prev_max) and (rs_now_min <= rsi_now <= rs_now_max)
+            
+            if is_downtrend and has_momentum and is_pullback_s:
                 entry_price = df.loc[i, 'open']
-                trade_capital = balance * risk_per_trade
-                fee_entry = trade_capital * fee_rate
-                balance -= fee_entry
+                margin = balance * risk_per_trade
+                fee_entry = (margin * leverage) * fee_rate
+                balance -= (margin + fee_entry)
                 position = -1
                 df.at[i, 'total_fees'] += fee_entry
-                print(f"{df.loc[i, 'timestamp'].date()} | OPEN SHORT  | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (ADX: {current_adx:.1f}, RSI: {current_rsi:.1f})", flush=True)
+                print(f"{df.loc[i, 'timestamp'].date()} | OPEN SHORT  | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (Lev: {leverage}x)", flush=True)
 
-        # Update Daily Equity (80% Cash + 20% Unrealized PnL)
+        # Update Daily Equity (Balance + Margin + Unrealized PnL)
         if position == 1:
             profit_pct = (df.loc[i, 'close'] / entry_price) - 1
-            df.at[i, 'current_balance'] = balance + (trade_capital * profit_pct)
+            pnl_unrealized = margin * leverage * profit_pct
+            df.at[i, 'current_balance'] = balance + margin + pnl_unrealized
         elif position == -1:
             profit_pct = (entry_price - df.loc[i, 'close']) / entry_price
-            df.at[i, 'current_balance'] = balance + (trade_capital * profit_pct)
+            pnl_unrealized = margin * leverage * profit_pct
+            df.at[i, 'current_balance'] = balance + margin + pnl_unrealized
         else:
             df.at[i, 'current_balance'] = balance
     
