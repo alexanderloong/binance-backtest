@@ -11,7 +11,7 @@ CONFIG = {
     
     # ADX Indicator Settings
     "adx_period": 14,
-    "adx_threshold": 20,
+    "adx_threshold": 25,
     
     # RSI Indicator Settings
     "rsi_period": 14,
@@ -24,13 +24,13 @@ CONFIG = {
     
     # Capital Management
     "initial_balance": 1000,
-    "risk_per_trade": 0.2,  # 20% of balance per trade
-    "leverage": 5,         # Leverage (1x to 125x)
-    "fee_rate": 0.0005,     # 0.05% Binance Futures Taker fee
+    "risk_per_trade": 0.05,  # 5% risk
+    "leverage": 5,         
+    "fee_rate": 0.0005,     
     
     # Partial Take Profit Settings
-    "tp1_ratio": 1.7,       # Take Profit 1 at 1.5x Risk/Reward
-    "tp1_share": 0.3,       # Close 50% of position at TP1
+    "tp1_ratio": 2.5,       # Tăng mạnh TP1 để bù đắp các lệnh thua
+    "tp1_share": 0.2,       # Chỉ chốt 20%, để 80% chạy theo trend dài
     
     # Data Storage
     "data_file": "market_data.csv"

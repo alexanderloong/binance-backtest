@@ -235,10 +235,14 @@ def run_backtest(df):
     rs_now_min = CONFIG['rsi_short_now_min']
     rs_now_max = CONFIG['rsi_short_now_max']
     
-    df = calculate_supertrend(df)
-    df['adx'] = calculate_adx(df)
-    df['rsi'] = calculate_rsi(df)
-    df['vwap'] = calculate_vwap(df)
+    if 'supertrend_dir' not in df.columns:
+        df = calculate_supertrend(df)
+    if 'adx' not in df.columns:
+        df['adx'] = calculate_adx(df)
+    if 'rsi' not in df.columns:
+        df['rsi'] = calculate_rsi(df)
+    if 'vwap' not in df.columns:
+        df['vwap'] = calculate_vwap(df)
     
     df['total_fees'] = 0.0
     df['current_balance'] = float(initial_balance)
