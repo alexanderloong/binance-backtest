@@ -24,8 +24,8 @@ CONFIG = {
     
     # Capital Management
     "initial_balance": 1000,
-    "risk_per_trade": 0.05,  # 5% risk
-    "leverage": 5,         
+    "risk_per_trade": 0.10,  # 10% risk per trade - Aggressive Growth
+    "leverage": 20,         # Leverage 20x to maximize returns on high probability setups
     "fee_rate": 0.0005,     
     
     # Partial Take Profit Settings
