@@ -24,9 +24,13 @@ CONFIG = {
     
     # Capital Management
     "initial_balance": 1000,
-    "risk_per_trade": 0.2,  # 20% of balance per trade
-    "leverage": 5,         # Leverage (1x to 125x)
+    "risk_per_trade": 0.25,  # 20% of balance per trade
+    "leverage": 10,         # Leverage (1x to 125x)
     "fee_rate": 0.0005,     # 0.05% Binance Futures Taker fee
+    
+    # Partial Take Profit Settings
+    "tp1_ratio": 1.7,       # Take Profit 1 at 1.5x Risk/Reward
+    "tp1_share": 0.3,       # Close 50% of position at TP1
     
     # Data Storage
     "data_file": "market_data.csv"

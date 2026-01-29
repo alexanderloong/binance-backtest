@@ -128,6 +128,8 @@ def calculate_supertrend(df, period=CONFIG['st_period'], multiplier=CONFIG['st_m
                 direction[i] = -1
 
     df['supertrend_dir'] = direction
+    # Add the actual supertrend line value (lower band for uptrend, upper for downtrend)
+    df['supertrend_val'] = np.where(direction == 1, final_lower_band, final_upper_band)
     return df
 
 def calculate_adx(df, period=CONFIG['adx_period']):
@@ -226,11 +228,16 @@ def run_backtest(df):
     balance = initial_balance
     position = 0 # 0: No position, 1: Long, -1: Short
     entry_price = 0
+    balance_at_open = 0
+    tp1_hit = False
+    current_margin = 0
+    sl_price = 0
+    tp1_price = 0
     trade_results = []
     
     print(f"\n--- TRADE LOG (Risk {risk_per_trade*100}%, Lev {leverage}x, ADX > {adx_threshold}) ---", flush=True)
-    print(f"{'Date':<12} | {'Action':<12} | {'Price':<12} | {'Fee (USDT)':<10} | {'Balance (USDT)':<15}", flush=True)
-    print("-" * 90, flush=True)
+    print(f"{'Timestamp':<18} | {'Action':<12} | {'Price':<10} | {'Fee':<8} | {'Balance':<10} | {'Net'}", flush=True)
+    print("-" * 80, flush=True)
     
     for i in range(len(df)):
         if i < 31: # Need i-2 so min index is 2, indicators need stabilization
@@ -244,40 +251,78 @@ def run_backtest(df):
         current_close = df.loc[i-1, 'close']
         current_vwap = df.loc[i-1, 'vwap']
         
-        # 1. EXIT LOGIC (Flipped Trend)
-        if position == 1 and current_dir == -1:
-            exit_price = df.loc[i, 'open']
-            profit_pct = (exit_price / entry_price) - 1
-            pnl = margin * leverage * profit_pct
-            
-            # Check for Liquidation
-            if pnl <= -margin:
-                pnl = -margin
-                print(f"{df.loc[i, 'timestamp'].date()} | LIQUIDATED LONG | {exit_price:<12.2f} | 0.00       | {balance:<15.2f}", flush=True)
-            
-            fee_exit = (abs(margin * leverage) + pnl) * fee_rate
-            balance = balance + margin + pnl - fee_exit
-            df.at[i, 'total_fees'] += fee_exit
-            trade_results.append(pnl - fee_exit)
-            print(f"{df.loc[i, 'timestamp'].date()} | CLOSE LONG  | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*leverage*100:.2f}%)", flush=True)
-            position = 0
+        # 1. EXIT LOGIC
+        if position == 1:
+            # Check for TP1
+            if not tp1_hit and df.loc[i, 'high'] >= tp1_price:
+                # Close 50% of position
+                exit_price = tp1_price
+                profit_pct = (exit_price / entry_price) - 1
+                pnl = (current_margin * CONFIG['tp1_share']) * leverage * profit_pct
+                fee_exit = (abs(current_margin * CONFIG['tp1_share'] * leverage) + pnl) * fee_rate
+                
+                balance += (current_margin * CONFIG['tp1_share']) + pnl - fee_exit
+                current_margin *= (1 - CONFIG['tp1_share'])
+                df.at[i, 'total_fees'] += fee_exit
+                tp1_hit = True
+                sl_price = entry_price # Move SL to Break-even
+                ts = df.loc[i, 'timestamp'].strftime('%Y-%m-%d %H:%M')
+                print(f"[{ts}] PARTIAL TP L - {exit_price:<10.2f} | {fee_exit:<8.2f} | {balance:<10.2f} | ---")
 
-        elif position == -1 and current_dir == 1:
-            exit_price = df.loc[i, 'open']
-            profit_pct = (entry_price - exit_price) / entry_price
-            pnl = margin * leverage * profit_pct
-            
-            # Check for Liquidation
-            if pnl <= -margin:
-                pnl = -margin
-                print(f"{df.loc[i, 'timestamp'].date()} | LIQUIDATED SHORT| {exit_price:<12.2f} | 0.00       | {balance:<15.2f}", flush=True)
+            # Check for SL or Trend Flip
+            if df.loc[i, 'low'] <= sl_price or current_dir == -1:
+                exit_price = sl_price if df.loc[i, 'low'] <= sl_price else df.loc[i, 'open']
+                profit_pct = (exit_price / entry_price) - 1
+                pnl = current_margin * leverage * profit_pct
+                fee_exit = (abs(current_margin * leverage) + pnl) * fee_rate
+                
+                balance += current_margin + pnl - fee_exit
+                df.at[i, 'total_fees'] += fee_exit
+                
+                # Calculate NET profit for the entire trade
+                net_trade_profit = balance - balance_at_open
+                trade_results.append(net_trade_profit)
+                
+                ts = df.loc[i, 'timestamp'].strftime('%Y-%m-%d %H:%M')
+                print(f"[{ts}] CLOSE LONG   - {exit_price:<10.2f} | {fee_exit:<8.2f} | {balance:<10.2f} | {net_trade_profit:+.2f}")
+                position = 0
+                continue
 
-            fee_exit = (abs(margin * leverage) + pnl) * fee_rate
-            balance = balance + margin + pnl - fee_exit
-            df.at[i, 'total_fees'] += fee_exit
-            trade_results.append(pnl - fee_exit)
-            print(f"{df.loc[i, 'timestamp'].date()} | CLOSE SHORT | {exit_price:<12.2f} | {fee_exit:<10.2f} | {balance:<15.2f} (Ret: {profit_pct*leverage*100:.2f}%)", flush=True)
-            position = 0
+        elif position == -1:
+            # Check for TP1
+            if not tp1_hit and df.loc[i, 'low'] <= tp1_price:
+                # Close 50% of position
+                exit_price = tp1_price
+                profit_pct = (entry_price - exit_price) / entry_price
+                pnl = (current_margin * CONFIG['tp1_share']) * leverage * profit_pct
+                fee_exit = (abs(current_margin * CONFIG['tp1_share'] * leverage) + pnl) * fee_rate
+                
+                balance += (current_margin * CONFIG['tp1_share']) + pnl - fee_exit
+                current_margin *= (1 - CONFIG['tp1_share'])
+                df.at[i, 'total_fees'] += fee_exit
+                tp1_hit = True
+                sl_price = entry_price # Move SL to Break-even
+                ts = df.loc[i, 'timestamp'].strftime('%Y-%m-%d %H:%M')
+                print(f"[{ts}] PARTIAL TP S - {exit_price:<10.2f} | {fee_exit:<8.2f} | {balance:<10.2f} | ---")
+
+            # Check for SL or Trend Flip
+            if df.loc[i, 'high'] >= sl_price or current_dir == 1:
+                exit_price = sl_price if df.loc[i, 'high'] >= sl_price else df.loc[i, 'open']
+                profit_pct = (entry_price - exit_price) / entry_price
+                pnl = current_margin * leverage * profit_pct
+                fee_exit = (abs(current_margin * leverage) + pnl) * fee_rate
+                
+                balance += current_margin + pnl - fee_exit
+                df.at[i, 'total_fees'] += fee_exit
+                
+                # Calculate NET profit for the entire trade
+                net_trade_profit = balance - balance_at_open
+                trade_results.append(net_trade_profit)
+                
+                ts = df.loc[i, 'timestamp'].strftime('%Y-%m-%d %H:%M')
+                print(f"[{ts}] CLOSE SHORT  - {exit_price:<10.2f} | {fee_exit:<8.2f} | {balance:<10.2f} | {net_trade_profit:+.2f}")
+                position = 0
+                continue
 
         # 2. ENTRY LOGIC (Current Condition)
         if position == 0:
@@ -288,13 +333,19 @@ def run_backtest(df):
             is_pullback_l = (rsi_prev > rl_prev_min) and (rl_now_min <= rsi_now <= rl_now_max)
             
             if is_uptrend and has_momentum and above_vwap and is_pullback_l:
+                balance_at_open = balance # Capture balance before trade starts
                 entry_price = df.loc[i, 'open']
-                margin = balance * risk_per_trade
-                fee_entry = (margin * leverage) * fee_rate
-                balance -= (margin + fee_entry)
+                current_margin = balance * risk_per_trade
+                fee_entry = (current_margin * leverage) * fee_rate
+                balance -= (current_margin + fee_entry)
                 position = 1
+                tp1_hit = False
+                sl_price = df.loc[i-1, 'supertrend_val']
+                risk = abs(entry_price - sl_price)
+                tp1_price = entry_price + (risk * CONFIG['tp1_ratio'])
                 df.at[i, 'total_fees'] += fee_entry
-                print(f"{df.loc[i, 'timestamp'].date()} | OPEN LONG   | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (Lev: {leverage}x, P>VWAP)")
+                ts = df.loc[i, 'timestamp'].strftime('%Y-%m-%d %H:%M')
+                print(f"[{ts}] OPEN LONG    - {entry_price:<10.2f} | {fee_entry:<8.2f} | {balance:<10.2f} | ---")
 
             # Short Entry Logic
             is_downtrend = current_dir == -1
@@ -302,23 +353,29 @@ def run_backtest(df):
             is_pullback_s = (rsi_prev < rs_prev_max) and (rs_now_min <= rsi_now <= rs_now_max)
             
             if is_downtrend and has_momentum and below_vwap and is_pullback_s:
+                balance_at_open = balance # Capture balance before trade starts
                 entry_price = df.loc[i, 'open']
-                margin = balance * risk_per_trade
-                fee_entry = (margin * leverage) * fee_rate
-                balance -= (margin + fee_entry)
+                current_margin = balance * risk_per_trade
+                fee_entry = (current_margin * leverage) * fee_rate
+                balance -= (current_margin + fee_entry)
                 position = -1
+                tp1_hit = False
+                sl_price = df.loc[i-1, 'supertrend_val']
+                risk = abs(entry_price - sl_price)
+                tp1_price = entry_price - (risk * CONFIG['tp1_ratio'])
                 df.at[i, 'total_fees'] += fee_entry
-                print(f"{df.loc[i, 'timestamp'].date()} | OPEN SHORT  | {entry_price:<12.2f} | {fee_entry:<10.2f} | {balance:<15.2f} (Lev: {leverage}x, P<VWAP)")
+                ts = df.loc[i, 'timestamp'].strftime('%Y-%m-%d %H:%M')
+                print(f"[{ts}] OPEN SHORT   - {entry_price:<10.2f} | {fee_entry:<8.2f} | {balance:<10.2f} | ---")
 
-        # Update Daily Equity (Balance + Margin + Unrealized PnL)
+        # Update Daily Equity (Balance + current_margin + Unrealized PnL)
         if position == 1:
             profit_pct = (df.loc[i, 'close'] / entry_price) - 1
-            pnl_unrealized = margin * leverage * profit_pct
-            df.at[i, 'current_balance'] = balance + margin + pnl_unrealized
+            pnl_unrealized = current_margin * leverage * profit_pct
+            df.at[i, 'current_balance'] = balance + current_margin + pnl_unrealized
         elif position == -1:
             profit_pct = (entry_price - df.loc[i, 'close']) / entry_price
-            pnl_unrealized = margin * leverage * profit_pct
-            df.at[i, 'current_balance'] = balance + margin + pnl_unrealized
+            pnl_unrealized = current_margin * leverage * profit_pct
+            df.at[i, 'current_balance'] = balance + current_margin + pnl_unrealized
         else:
             df.at[i, 'current_balance'] = balance
     
@@ -341,6 +398,11 @@ def report(df, trade_results):
     wins = [r for r in trade_results if r > 0]
     win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
     
+    # Calculate Profit Factor
+    gross_profit = sum(wins)
+    gross_loss = abs(sum([r for r in trade_results if r < 0]))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else (float('inf') if gross_profit > 0 else 0)
+    
     print(f"\n--- PERFORMANCE SUMMARY ({CONFIG['symbol']}) ---", flush=True)
     print(f"Period: {df['timestamp'].iloc[0].date()} to {df['timestamp'].iloc[-1].date()}", flush=True)
     print(f"Initial Balance: {df['current_balance'].iloc[0]:.2f} USDT", flush=True)
@@ -350,6 +412,7 @@ def report(df, trade_results):
     print(f"Max Drawdown: {max_dd:.2f}%", flush=True)
     print(f"Total Trades: {total_trades}", flush=True)
     print(f"Win Rate: {win_rate:.2f}%", flush=True)
+    print(f"Profit Factor: {profit_factor:.2f}", flush=True)
     
     plt.figure(figsize=(12, 6))
     plt.plot(df['timestamp'], df['current_balance'], label='Equity Curve')
