@@ -15,12 +15,12 @@ CONFIG = {
     
     # RSI Indicator Settings
     "rsi_period": 14,
-    "rsi_long_prev_min": 50,
-    "rsi_long_now_min": 40,
+    "rsi_long_prev_min": 55,
+    "rsi_long_now_min": 45,
     "rsi_long_now_max": 50,
-    "rsi_short_prev_max": 50,
+    "rsi_short_prev_max": 45,
     "rsi_short_now_min": 50,
-    "rsi_short_now_max": 60,
+    "rsi_short_now_max": 55,
     
     # Capital Management
     "initial_balance": 1000,
@@ -29,8 +29,8 @@ CONFIG = {
     "fee_rate": 0.0005,     
     
     # Partial Take Profit Settings
-    "tp1_ratio": 2.5,       # Tăng mạnh TP1 để bù đắp các lệnh thua
-    "tp1_share": 0.2,       # Chỉ chốt 20%, để 80% chạy theo trend dài
+    "tp1_ratio": 4.75,       # Tăng mạnh TP1 để bắt các con sóng lớn (Home Run)
+    "tp1_share": 0.8,       # Chốt 80% lợi nhuận khi đạt TP lớn
     
     # Data Storage
     "data_file": "market_data.csv"
