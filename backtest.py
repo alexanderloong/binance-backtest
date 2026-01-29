@@ -26,16 +26,34 @@ def fetch_data(symbol=CONFIG['symbol'], timeframe=CONFIG['timeframe'], limit=CON
         # Initialize Binance UM Futures client
         client = UMFutures()
         
-        # klines returns: [ [Open time, Open, High, Low, Close, Volume, Close time, ...] ]
-        klines = client.klines(symbol=symbol, interval=timeframe, limit=limit)
+        all_klines = []
+        end_time = None
         
-        if not klines:
+        while len(all_klines) < limit:
+            batch_limit = min(1000, limit - len(all_klines))
+            # klines returns: [ [Open time, Open, High, Low, Close, Volume, Close time, ...] ]
+            # Fetch backwards using end_time
+            klines = client.klines(symbol=symbol, interval=timeframe, limit=batch_limit, endTime=end_time)
+            
+            if not klines:
+                break
+                
+            # Prepend the batch to maintain chronological order
+            all_klines = klines + all_klines
+            
+            # Update end_time to the timestamp of the oldest kline in this batch minus 1ms
+            end_time = klines[0][0] - 1
+            
+            if len(all_klines) % 5000 == 0 or len(all_klines) >= limit:
+                print(f"  Fetched {len(all_klines)}/{limit} candles...", flush=True)
+
+        if not all_klines:
             print(f"Error: No data returned from Binance for {symbol}. Please check the symbol and timeframe.", flush=True)
             return None
             
         # Extract required columns
         data = []
-        for k in klines:
+        for k in all_klines:
             data.append([
                 k[0], # timestamp
                 float(k[1]), # open
@@ -381,18 +399,20 @@ def run_backtest(df):
     
     return df, trade_results
 
-def calculate_max_drawdown(balance_series):
-    """Calculate the Maximum Drawdown percentage."""
+def calculate_drawdown_series(balance_series):
+    """Calculate the Drawdown series as a percentage."""
     peak = balance_series.expanding(min_periods=1).max()
-    drawdown = (balance_series - peak) / peak
-    return drawdown.min() * 100
+    drawdown = (balance_series - peak) / peak * 100
+    return drawdown
 
 def report(df, trade_results):
-    """Print performance summary and plot equity curve."""
+    """Print performance summary and plot equity curve, BTC price, and drawdown."""
     final_balance = df['current_balance'].iloc[-1]
     total_fees_paid = df['total_fees'].sum()
     total_return = (final_balance - df['current_balance'].iloc[0]) / df['current_balance'].iloc[0] * 100
-    max_dd = calculate_max_drawdown(df['current_balance'])
+    
+    drawdown_series = calculate_drawdown_series(df['current_balance'])
+    max_dd = drawdown_series.min()
     
     total_trades = len(trade_results)
     wins = [r for r in trade_results if r > 0]
@@ -414,15 +434,33 @@ def report(df, trade_results):
     print(f"Win Rate: {win_rate:.2f}%", flush=True)
     print(f"Profit Factor: {profit_factor:.2f}", flush=True)
     
-    plt.figure(figsize=(12, 6))
-    plt.plot(df['timestamp'], df['current_balance'], label='Equity Curve')
-    plt.title(f"Backtest {CONFIG['symbol']} - SuperTrend (Risk {CONFIG['risk_per_trade']*100}%)")
-    plt.xlabel('Date')
-    plt.ylabel('USDT')
-    plt.legend()
-    plt.grid(True)
+    # Create subplots
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True, gridspec_kw={'height_ratios': [2, 1, 1]})
+    
+    # 1. Equity Curve
+    ax1.plot(df['timestamp'], df['current_balance'], label='Equity Curve', color='royalblue', linewidth=2)
+    ax1.set_title(f"Backtest {CONFIG['symbol']} - Performance Analysis", fontsize=14, fontweight='bold')
+    ax1.set_ylabel('Balance (USDT)', fontsize=10)
+    ax1.legend(loc='upper left')
+    ax1.grid(True, alpha=0.3)
+    
+    # 2. BTC Price
+    ax2.plot(df['timestamp'], df['close'], label=f'{CONFIG["symbol"]} Price', color='orange', linewidth=1)
+    ax2.set_ylabel('Price', fontsize=10)
+    ax2.legend(loc='upper left')
+    ax2.grid(True, alpha=0.3)
+    
+    # 3. Drawdown
+    ax3.fill_between(df['timestamp'], drawdown_series, 0, color='red', alpha=0.3, label='Drawdown %')
+    ax3.plot(df['timestamp'], drawdown_series, color='red', linewidth=0.5)
+    ax3.set_ylabel('Drawdown %', fontsize=10)
+    ax3.set_xlabel('Date')
+    ax3.legend(loc='upper left')
+    ax3.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
     plt.savefig('equity_curve.png')
-    print("\nEquity curve chart updated in 'equity_curve.png'", flush=True)
+    print("\nEquity curve chart (with Price and Drawdown) updated in 'equity_curve.png'", flush=True)
 
 if __name__ == "__main__":
     df = fetch_data()
